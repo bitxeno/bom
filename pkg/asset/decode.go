@@ -268,9 +268,8 @@ func (a *asset) Renditions(loop func(cb *RenditionCallback) (stop bool)) error {
 					return err
 				}
 			}
-		case "PDF":
 		default:
-			return fmt.Errorf("unknown rendition with pixel format: %v", c.PixelFormat.String())
+			log.Printf("unknown rendition with pixel format: %v", c.PixelFormat.String())
 		}
 
 		return nil
