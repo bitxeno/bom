@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"io"
 	"io/ioutil"
 
@@ -117,6 +118,31 @@ func (a *asset) decodeImage(format string, d io.Reader, c *csiheader) (image.Ima
 	return decodeImage(format, int(c.Width), int(c.Height), rawData)
 }
 
+// format: "JPEG", "HEIF"
+func (a *asset) decodeJpg(format string, d io.Reader, c *csiheader) (image.Image, error) {
+	p := &CUIRawPixelRendition{}
+	if err := binary.Read(d, binary.LittleEndian, &p.Tag); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(d, binary.LittleEndian, &p.Version); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(d, binary.LittleEndian, &p.RawDataLength); err != nil {
+		return nil, err
+	}
+
+	if p.Tag.String() != "DWAR" {
+		return nil, fmt.Errorf("unsupport %s tag: %v", format, p.Tag.String())
+	}
+
+	// decode header
+	buf := make([]byte, p.RawDataLength)
+	if _, err := d.Read(buf); err != nil {
+		return nil, err
+	}
+	return jpeg.Decode(bytes.NewBuffer(buf))
+}
+
 func umCompression(t RenditionCompressionType, r io.Reader) (decoded io.ReadCloser, err error) {
 	// upcompression raw data
 	switch t {
@@ -188,6 +214,12 @@ func decodeImage(format string, width, height int, r io.Reader) (image.Image, er
 			Rect:   rect,
 		}
 		return bgra, nil
+	case "JPEG":
+		img, err := jpeg.Decode(r)
+		if err != nil {
+			return nil, errors.New("error image content")
+		}
+		return img, nil
 	case "RGB5":
 	case "RGBW":
 	case "GA16":

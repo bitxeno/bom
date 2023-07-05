@@ -34,10 +34,10 @@ type csiheader struct {
 
 type colorSpace uint32
 
-// struct {
-// 	ColorSpaceID uint32
-// 	Reserved     uint32
-// }
+//	struct {
+//		ColorSpaceID uint32
+//		Reserved     uint32
+//	}
 func (c colorSpace) ColorSpaceID() uint32 {
 	return uint32(c) & (0b1111 << 0)
 }
@@ -182,6 +182,17 @@ type CUIThemePixelRendition struct {
 	Version uint32
 	// uint32_t compressionType;
 	CompressionType RenditionCompressionType
+	// uint32_t rawDataLength;
+	RawDataLength uint32
+	// uint8_t rawData[]; // rawData or []CUIThemePixelRenditionV3
+	// RawData []byte
+}
+
+type CUIRawPixelRendition struct {
+	// uint32_t tag;					// 'CELM'
+	Tag helper.String4
+	// uint32_t version;
+	Version uint32
 	// uint32_t rawDataLength;
 	RawDataLength uint32
 	// uint8_t rawData[]; // rawData or []CUIThemePixelRenditionV3

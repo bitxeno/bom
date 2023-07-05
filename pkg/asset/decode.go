@@ -233,8 +233,25 @@ func (a *asset) Renditions(loop func(cb *RenditionCallback) (stop bool)) error {
 			// TODO:
 			log.Print("TODO: handle DATA")
 		case "JPEG", "HEIF":
-			// TODO:
-			log.Print("TODO: handle JPEG")
+			cb := &RenditionCallback{
+				Attrs: attrs,
+				Type:  RenditionTypeImage,
+				Name:  c.Csimetadata.Name.String(),
+			}
+
+			img, err := a.decodeJpg(format, d, c)
+			if err != nil {
+				cb.Err = err
+				stop := loop(cb)
+				if stop {
+					return err
+				}
+			}
+			cb.Image = img
+			stop := loop(cb)
+			if stop {
+				return nil
+			}
 		case "ARGB", "GA8", "RGB5", "RGBW", "GA16":
 			// TODO:
 			cb := &RenditionCallback{
