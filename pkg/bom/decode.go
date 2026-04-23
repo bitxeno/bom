@@ -173,34 +173,44 @@ func (b *bom) ReadTree(name string, loop func(k io.Reader, d io.Reader) error) e
 			}
 		}
 
-		tree.List = make([]TreeIndex, tree.Count)
-		for i := uint16(0); i < tree.Count; i++ {
-			pi := TreeIndex{}
-			binary.Read(buf, binary.BigEndian, &pi)
-			tree.List[i] = pi
+		for {
+			tree.List = make([]TreeIndex, tree.Count)
+			for i := uint16(0); i < tree.Count; i++ {
+				pi := TreeIndex{}
+				binary.Read(buf, binary.BigEndian, &pi)
+				tree.List[i] = pi
 
-			// get key and data
-			kbuf, err := b.blockReader(pi.KeyIndex)
-			if err != nil {
-				// in case of BITMAPKEYS, i don't know why not found, temporary handle
-				if err == ErrBlockNotFound {
-					p := make([]byte, 4)
-					binary.BigEndian.PutUint32(p, pi.KeyIndex)
-					kbuf = bytes.NewBuffer(p)
-				} else {
+				// get key and data
+				kbuf, err := b.blockReader(pi.KeyIndex)
+				if err != nil {
+					// in case of BITMAPKEYS, i don't know why not found, temporary handle
+					if err == ErrBlockNotFound {
+						p := make([]byte, 4)
+						binary.BigEndian.PutUint32(p, pi.KeyIndex)
+						kbuf = bytes.NewBuffer(p)
+					} else {
+						return err
+					}
+				}
+				vbuf, err := b.blockReader(pi.ValueIndex)
+				if err != nil {
+					// return err
+				}
+				// loop callback entry
+				if err := loop(kbuf, vbuf); err != nil {
 					return err
 				}
 			}
-			vbuf, err := b.blockReader(pi.ValueIndex)
-			if err != nil {
-				// return err
+
+			if tree.Forward == 0 {
+				return nil
 			}
-			// loop callback entry
-			if err := loop(kbuf, vbuf); err != nil {
+
+			tree, buf, err = b.readTree(tree.Forward)
+			if err != nil {
 				return err
 			}
 		}
-		return nil
 	}
 
 	return ErrNameNotMatch

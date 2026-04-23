@@ -40,7 +40,7 @@ func TestParser(t *testing.T) {
 	names := b.BlockNames()
 	tnames := []string{"CARHEADER", "RENDITIONS", "FACETKEYS", "APPEARANCEKEYS", "KEYFORMAT", "EXTENDED_METADATA", "BITMAPKEYS"}
 	if !reflect.DeepEqual(tnames, names) {
-		t.Fail()
+		t.Fatalf("unexpected block names: got %v want %v", names, tnames)
 	}
 
 	for k, v := range testBlockMap {
@@ -53,12 +53,12 @@ func TestParser(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(v, d) {
-			t.Fail()
+			t.Fatalf("unexpected block data for %s", k)
 		}
 	}
 
 	keys := []string{}
-	tkeys := []string{"AppIcon", "test", "test2", "test3"}
+	tkeys := []string{"LaunchImage", "icon", "icon/Layer1/Content", "icon/Layer2/Content", "icon/Layer3/Content", "icon/Layer4/Content", "topshelf_wide"}
 	if err := b.ReadTree("FACETKEYS", func(k io.Reader, d io.Reader) error {
 		b, err := ioutil.ReadAll(k)
 		if err != nil {
@@ -70,6 +70,36 @@ func TestParser(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(tkeys, keys) {
-		t.Fail()
+		t.Fatalf("unexpected facet keys: got %v want %v", keys, tkeys)
+	}
+}
+
+func TestReadTreeTraversesAllFacetKeys(t *testing.T) {
+	f, err := openTestData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	b := New(f)
+	if err := b.Parse(); err != nil {
+		t.Fatal(err)
+	}
+
+	keys := []string{}
+	want := []string{"LaunchImage", "icon", "icon/Layer1/Content", "icon/Layer2/Content", "icon/Layer3/Content", "icon/Layer4/Content", "topshelf_wide"}
+	if err := b.ReadTree("FACETKEYS", func(k io.Reader, d io.Reader) error {
+		name, err := ioutil.ReadAll(k)
+		if err != nil {
+			return err
+		}
+		keys = append(keys, string(name))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(want, keys) {
+		t.Fatalf("unexpected facet keys: got %v want %v", keys, want)
 	}
 }

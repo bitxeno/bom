@@ -46,11 +46,11 @@ func decodeFile(fileName, imageName string, t *testing.T) {
 		t.Fatal(err)
 	}
 
-	img, err := b.Image(imageName)
+	img, err := b.LargestImage(imageName)
 	if err != nil {
 		t.Fatal(err)
 	} else {
-		log.Printf("b.Image('AppIcon'): %v", img.Bounds())
+		log.Printf("b.Image(%q): %v", imageName, img.Bounds())
 	}
 
 	// name: 'RENDITIONS'

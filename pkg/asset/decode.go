@@ -200,6 +200,21 @@ type RenditionCallback struct {
 	Name  string
 }
 
+const appIconPart = uint16hex(0x00DC)
+
+// ImageOptions narrows image selection when multiple renditions share a lookup name.
+type ImageOptions struct {
+	Idiom string
+	Scale int
+}
+
+type imageCandidate struct {
+	name          string
+	renditionName string
+	image         image.Image
+	attrs         RenditionAttrs
+}
+
 func (a *asset) Renditions(loop func(cb *RenditionCallback) (stop bool)) error {
 	kf, err := a.KeyFormat()
 	if err != nil {
@@ -336,17 +351,186 @@ func (a *asset) ImageWalker(loop func(name string, img image.Image) (end bool)) 
 	})
 }
 
-func (a *asset) Image(name string) (image.Image, error) {
-	var img image.Image
-	err := a.ImageWalker(func(n string, i image.Image) (end bool) {
-		if name == n {
-			img = i
-			return true
+func appIconFacetNames(facets map[string]RenditionAttrs) map[string]struct{} {
+	names := map[string]struct{}{}
+	for name, attrs := range facets {
+		part, ok := attrs[kRenditionAttributeType_Part]
+		if ok && part == appIconPart {
+			names[name] = struct{}{}
 		}
+	}
+	return names
+}
+
+func isAppIconLookup(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "appicon", "icon":
+		return true
+	default:
 		return false
-	})
-	if img == nil {
+	}
+}
+
+func parseImageIdiom(name string) (uint16hex, error) {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "universal" {
+		return uint16hex(kCoreThemeIdiomUniversal), nil
+	}
+	for value, idiom := range kCoreThemeIdiomNames {
+		if idiom == normalized {
+			return uint16hex(value), nil
+		}
+	}
+	return 0, fmt.Errorf("unknown idiom: %v", name)
+}
+
+func isBetterImageCandidate(current imageCandidate, best imageCandidate) bool {
+	currentBounds := current.image.Bounds()
+	bestBounds := best.image.Bounds()
+	currentArea := currentBounds.Dx() * currentBounds.Dy()
+	bestArea := bestBounds.Dx() * bestBounds.Dy()
+	if currentArea != bestArea {
+		return currentArea > bestArea
+	}
+	if currentBounds.Dx() != bestBounds.Dx() {
+		return currentBounds.Dx() > bestBounds.Dx()
+	}
+	if currentBounds.Dy() != bestBounds.Dy() {
+		return currentBounds.Dy() > bestBounds.Dy()
+	}
+	return current.attrs[kRenditionAttributeType_Scale] > best.attrs[kRenditionAttributeType_Scale]
+}
+
+func pickBestImageCandidate(candidates []imageCandidate, options ImageOptions) (*imageCandidate, error) {
+	var (
+		best       *imageCandidate
+		idiomValue uint16hex
+		err        error
+	)
+	if strings.TrimSpace(options.Idiom) != "" {
+		idiomValue, err = parseImageIdiom(options.Idiom)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for i := range candidates {
+		candidate := &candidates[i]
+		if strings.TrimSpace(options.Idiom) != "" && candidate.attrs[kRenditionAttributeType_Idiom] != idiomValue {
+			continue
+		}
+		if options.Scale > 0 && candidate.attrs[kRenditionAttributeType_Scale] != uint16hex(options.Scale) {
+			continue
+		}
+		if best == nil || isBetterImageCandidate(*candidate, *best) {
+			best = candidate
+		}
+	}
+	return best, nil
+}
+
+func formatImageOptions(options ImageOptions) string {
+	parts := []string{}
+	if idiom := strings.TrimSpace(options.Idiom); idiom != "" {
+		parts = append(parts, fmt.Sprintf("idiom=%s", idiom))
+	}
+	if options.Scale > 0 {
+		parts = append(parts, fmt.Sprintf("scale=%d", options.Scale))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%s)", strings.Join(parts, ", "))
+}
+
+func (a *asset) facetNamesForImage(name string, facets map[string]RenditionAttrs) (map[string]struct{}, error) {
+	if _, ok := facets[name]; ok {
+		return map[string]struct{}{name: {}}, nil
+	}
+
+	if !isAppIconLookup(name) {
 		return nil, fmt.Errorf("not found: %v", name)
 	}
-	return img, err
+
+	appIcons := appIconFacetNames(facets)
+	if len(appIcons) == 0 {
+		return nil, fmt.Errorf("not found: %v", name)
+	}
+	return appIcons, nil
+}
+
+func (a *asset) imageCandidates(name string) ([]imageCandidate, error) {
+	facets, err := a.FacetKeys()
+	if err != nil {
+		return nil, err
+	}
+
+	facetNames, err := a.facetNamesForImage(name, facets)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := map[uint16hex]string{}
+	for facetName := range facetNames {
+		attrs := facets[facetName]
+		id, ok := attrs[kRenditionAttributeType_Identifier]
+		if !ok {
+			continue
+		}
+		ids[id] = facetName
+	}
+
+	candidates := []imageCandidate{}
+	err = a.Renditions(func(cb *RenditionCallback) (stop bool) {
+		if cb.Err != nil || cb.Type != RenditionTypeImage || cb.Image == nil {
+			return false
+		}
+		id, ok := cb.Attrs[kRenditionAttributeType_Identifier]
+		if !ok {
+			return false
+		}
+		facetName, ok := ids[id]
+		if !ok {
+			return false
+		}
+		candidates = append(candidates, imageCandidate{
+			name:          facetName,
+			renditionName: cb.Name,
+			image:         cb.Image,
+			attrs:         cb.Attrs,
+		})
+		return false
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("not found: %v", name)
+	}
+	return candidates, nil
+}
+
+// ImageWithOptions returns the largest decoded image that matches the name and optional idiom or scale filters.
+func (a *asset) ImageWithOptions(name string, options ImageOptions) (image.Image, error) {
+	candidates, err := a.imageCandidates(name)
+	if err != nil {
+		return nil, err
+	}
+
+	best, err := pickBestImageCandidate(candidates, options)
+	if err != nil {
+		return nil, err
+	}
+	if best == nil {
+		return nil, fmt.Errorf("not found: %v%v", name, formatImageOptions(options))
+	}
+	return best.image, nil
+}
+
+// LargestImage returns the largest decoded image that matches the lookup name.
+func (a *asset) LargestImage(name string) (image.Image, error) {
+	return a.ImageWithOptions(name, ImageOptions{})
+}
+
+func (a *asset) Image(name string) (image.Image, error) {
+	return a.ImageWithOptions(name, ImageOptions{})
 }

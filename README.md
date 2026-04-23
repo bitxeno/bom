@@ -39,6 +39,12 @@ defer f.Close()
 b, _ := asset.NewWithReadSeeker(f)
 // read image with name
 img, err := b.Image("AppIcon")
+
+// read the largest decoded image for the name
+largest, err := b.LargestImage("AppIcon")
+
+// read the largest decoded image that matches idiom and scale
+phone3x, err := b.ImageWithOptions("AppIcon", asset.ImageOptions{Idiom: "phone", Scale: 3})
 ```
 
 # Reference
