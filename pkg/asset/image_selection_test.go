@@ -50,6 +50,25 @@ func TestPickBestImageCandidateRejectsUnknownIdiom(t *testing.T) {
 	}
 }
 
+func TestAppIconFacetNamesFallsBackToNamePrefix(t *testing.T) {
+	facets := map[string]RenditionAttrs{
+		"App Icon/Front/Content":  {},
+		"App Icon/Middle/Content": {},
+		"Top Shelf Image":         {},
+	}
+
+	names := appIconFacetNames(facets)
+	if _, ok := names["App Icon/Front/Content"]; !ok {
+		t.Fatal("expected app icon front facet to be included")
+	}
+	if _, ok := names["App Icon/Middle/Content"]; !ok {
+		t.Fatal("expected app icon middle facet to be included")
+	}
+	if _, ok := names["Top Shelf Image"]; ok {
+		t.Fatal("did not expect top shelf image to be included")
+	}
+}
+
 func newImageCandidate(name string, width, height int, idiom, scale uint16) imageCandidate {
 	return imageCandidate{
 		renditionName: name,

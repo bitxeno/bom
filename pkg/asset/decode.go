@@ -359,6 +359,15 @@ func appIconFacetNames(facets map[string]RenditionAttrs) map[string]struct{} {
 			names[name] = struct{}{}
 		}
 	}
+	if len(names) > 0 {
+		return names
+	}
+	for name := range facets {
+		normalized := strings.ToLower(strings.TrimSpace(name))
+		if strings.HasPrefix(normalized, "app icon") || strings.HasPrefix(normalized, "appicon") {
+			names[name] = struct{}{}
+		}
+	}
 	return names
 }
 

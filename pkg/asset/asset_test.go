@@ -14,7 +14,7 @@ import (
 
 func TestAsset(t *testing.T) {
 	fileNames := []string{
-		"../bom/test_data/Assets.Car", "AppIcon",
+		"/Volumes/UsbDrive/Downloads/Payload/BilibiliLive.app/Assets.car", "AppIcon",
 		// "test_data/YouTube.car", "AppIcon",
 		// "test_data/Instagram.car", "AppIcon",
 		// "test_data/Twitter.car", "ProductionAppIcon",
