@@ -215,6 +215,16 @@ type imageCandidate struct {
 	attrs         RenditionAttrs
 }
 
+// ImageCandidateInfo is a public, simplified view of an internal imageCandidate.
+// It intentionally omits internal attrs but includes image dimensions.
+type ImageCandidateInfo struct {
+	Name          string
+	RenditionName string
+	Image         image.Image
+	Width         int
+	Height        int
+}
+
 func (a *asset) Renditions(loop func(cb *RenditionCallback) (stop bool)) error {
 	kf, err := a.KeyFormat()
 	if err != nil {
@@ -542,4 +552,30 @@ func (a *asset) LargestImage(name string) (image.Image, error) {
 
 func (a *asset) Image(name string) (image.Image, error) {
 	return a.ImageWithOptions(name, ImageOptions{})
+}
+
+// ImageCandidatesInfo returns a public, simplified list of matching image candidates
+// containing name, rendition name, image and its dimensions. It does not expose attrs.
+func (a *asset) ImageCandidates(name string) ([]ImageCandidateInfo, error) {
+	candidates, err := a.imageCandidates(name)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ImageCandidateInfo, 0, len(candidates))
+	for _, c := range candidates {
+		w, h := 0, 0
+		if c.image != nil {
+			b := c.image.Bounds()
+			w = b.Dx()
+			h = b.Dy()
+		}
+		out = append(out, ImageCandidateInfo{
+			Name:          c.name,
+			RenditionName: c.renditionName,
+			Image:         c.image,
+			Width:         w,
+			Height:        h,
+		})
+	}
+	return out, nil
 }
