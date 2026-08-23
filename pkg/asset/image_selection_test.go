@@ -1,7 +1,9 @@
 package asset
 
 import (
+	"bytes"
 	"image"
+	"image/color"
 	"testing"
 )
 
@@ -66,6 +68,19 @@ func TestAppIconFacetNamesFallsBackToNamePrefix(t *testing.T) {
 	}
 	if _, ok := names["Top Shelf Image"]; ok {
 		t.Fatal("did not expect top shelf image to be included")
+	}
+}
+
+func TestDecodeImageSupportsBGRA(t *testing.T) {
+	img, err := decodeImage("BGRA", 1, 1, bytes.NewReader([]byte{1, 2, 3, 4}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := color.RGBAModel.Convert(img.At(0, 0)).(color.RGBA)
+	want := color.RGBA{R: 3, G: 2, B: 1, A: 4}
+	if got != want {
+		t.Fatalf("unexpected color: got %+v, want %+v", got, want)
 	}
 }
 

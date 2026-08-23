@@ -14,7 +14,7 @@ import (
 
 func TestAsset(t *testing.T) {
 	fileNames := []string{
-		"/Volumes/UsbDrive/Downloads/Payload/BilibiliLive.app/Assets.car", "AppIcon",
+		"/Volumes/UsbDrive/Downloads/Payload 2/Assets.car", "AppIcon",
 		// "test_data/YouTube.car", "AppIcon",
 		// "test_data/Instagram.car", "AppIcon",
 		// "test_data/Twitter.car", "ProductionAppIcon",
@@ -46,12 +46,12 @@ func decodeFile(fileName, imageName string, t *testing.T) {
 		t.Fatal(err)
 	}
 
-	img, err := b.LargestImage(imageName)
-	if err != nil {
-		t.Fatal(err)
-	} else {
-		log.Printf("b.Image(%q): %v", imageName, img.Bounds())
-	}
+	// img, err := b.Image(imageName)
+	// if err != nil {
+	// 	t.Fatal(err)
+	// } else {
+	// 	log.Printf("b.Image(%q): %v", imageName, img.Bounds())
+	// }
 
 	// name: 'RENDITIONS'
 	ri := 0

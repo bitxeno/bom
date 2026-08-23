@@ -63,8 +63,17 @@ func (p *GA8) PixOffset(x, y int) int {
 	return (y-p.Rect.Min.Y)*p.Stride + (x-p.Rect.Min.X)*2
 }
 
-// format: "ARGB", "GA8", "RGB5", "RGBW", "GA16"
+// maxDecodedDimension caps the pixel dimension of images decoded from an
+// Assets.car. Catalogs can contain very large flattened/launch images whose
+// decompressed size (width*height*4 bytes) would otherwise dominate memory
+// usage during an icon lookup.
+const maxDecodedDimension = 4096
+
+// format: "ARGB", "BGRA", "GA8", "RGB5", "RGBW", "GA16"
 func (a *asset) decodeImage(format string, d io.Reader, c *csiheader) (image.Image, error) {
+	if c.Width > maxDecodedDimension || c.Height > maxDecodedDimension {
+		return nil, fmt.Errorf("image too large to decode: %dx%d", c.Width, c.Height)
+	}
 	p := &CUIThemePixelRendition{}
 	if err := binary.Read(d, binary.LittleEndian, &p.Tag); err != nil {
 		return nil, err
@@ -80,19 +89,21 @@ func (a *asset) decodeImage(format string, d io.Reader, c *csiheader) (image.Ima
 	}
 
 	rawData := mreader.New()
+	bytesPerPixel := imageBytesPerPixel(format)
+	expectedTotalBytes := int(c.Width) * int(c.Height) * bytesPerPixel
 
 	// decode header
 	switch p.Version {
 	case 0, 2:
 		buf := make([]byte, p.RawDataLength)
-		if _, err := d.Read(buf); err != nil {
+		if _, err := io.ReadFull(d, buf); err != nil {
 			return nil, err
 		}
-		r, err := umCompression(p.CompressionType, bytes.NewBuffer(buf))
+		decodedChunk, err := decodeCompressedChunk(p.CompressionType, buf, expectedTotalBytes)
 		if err != nil {
 			return nil, err
 		}
-		rawData.Add(r)
+		rawData.Add(io.NopCloser(bytes.NewReader(decodedChunk)))
 	case 1, 3:
 		for i := 0; i < int(p.RawDataLength); i++ {
 			v3 := &CUIThemePixelRenditionV3{}
@@ -100,15 +111,20 @@ func (a *asset) decodeImage(format string, d io.Reader, c *csiheader) (image.Ima
 				return nil, err
 			}
 			buf := make([]byte, v3.RowDataLen)
-			err := binary.Read(d, binary.LittleEndian, buf)
+			_, err := io.ReadFull(d, buf)
 			if err != nil {
 				return nil, err
 			}
-			r, err := umCompression(p.CompressionType, bytes.NewBuffer(buf))
+
+			expectedChunkBytes := int(v3.Height) * int(c.Width) * bytesPerPixel
+			if expectedChunkBytes <= 0 {
+				expectedChunkBytes = expectedTotalBytes
+			}
+			decodedChunk, err := decodeCompressedChunk(p.CompressionType, buf, expectedChunkBytes)
 			if err != nil {
 				return nil, err
 			}
-			rawData.Add(r)
+			rawData.Add(io.NopCloser(bytes.NewReader(decodedChunk)))
 		}
 	default:
 		return nil, fmt.Errorf("unsupport version: %v", p.Version)
@@ -137,9 +153,19 @@ func (a *asset) decodeJpg(format string, d io.Reader, c *csiheader) (image.Image
 
 	// decode header
 	buf := make([]byte, p.RawDataLength)
-	if _, err := d.Read(buf); err != nil {
+	if _, err := io.ReadFull(d, buf); err != nil {
 		return nil, err
 	}
+
+	// JPEG renditions carry no dimensions in the catalog header, so peek
+	// at the JPEG header before decoding to avoid decompressing oversized
+	// images (the peak allocation of a decoded frame is width*height*4).
+	if cfg, err := jpeg.DecodeConfig(bytes.NewBuffer(buf)); err == nil {
+		if cfg.Width > maxDecodedDimension || cfg.Height > maxDecodedDimension {
+			return nil, fmt.Errorf("image too large to decode: %dx%d", cfg.Width, cfg.Height)
+		}
+	}
+
 	return jpeg.Decode(bytes.NewBuffer(buf))
 }
 
@@ -148,12 +174,16 @@ func umCompression(t RenditionCompressionType, r io.Reader) (decoded io.ReadClos
 	switch t {
 	case kRenditionCompressionType_zip:
 		return gzip.NewReader(r)
-	case kRenditionCompressionType_lzfse:
+	case kRenditionCompressionType_lzfse, kRenditionCompressionType_blurred:
 		d, err := ioutil.ReadAll(r)
 		if err != nil {
 			return nil, err
 		}
-		decoded = io.NopCloser(bytes.NewBuffer(lzfse.DecodeBuffer(d)))
+		decodedBuf, err := decodeLZFSE(d, 0)
+		if err != nil {
+			return nil, err
+		}
+		decoded = io.NopCloser(bytes.NewBuffer(decodedBuf))
 	case kRenditionCompressionType_uncompressed:
 		decoded = io.NopCloser(r)
 	// NOTE: do nothing
@@ -165,6 +195,105 @@ func umCompression(t RenditionCompressionType, r io.Reader) (decoded io.ReadClos
 	return
 }
 
+func decodeLZFSE(data []byte, maxOutput int) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	// Try with metadata prefixes skipped first: many CoreUI payloads
+	// prefix lzfse bytes with small headers, and decoding the full
+	// payload fails before the correctly-aligned attempt succeeds.
+	// Decompress into a fixed-size buffer so a failing attempt cannot
+	// balloon memory (lzfse-cgo's DecodeBuffer grows its output buffer
+	// up to ~50MB whenever a decode fails).
+	for _, skip := range []int{0, 4, 8, 12, 16} {
+		if len(data) <= skip {
+			continue
+		}
+		if maxOutput > 0 {
+			dst := make([]byte, maxOutput)
+			if n := lzfse.LzBitMapDecompress(data[skip:], dst); n > 0 && n <= len(dst) {
+				return dst[:n], nil
+			}
+		}
+	}
+
+	if out, ok := decodeLZFSEChunked(data, binary.LittleEndian); ok {
+		return out, nil
+	}
+	if out, ok := decodeLZFSEChunked(data, binary.BigEndian); ok {
+		return out, nil
+	}
+
+	return nil, fmt.Errorf("lzfse decode failed: empty output")
+}
+
+func decodeLZFSEChunked(data []byte, order binary.ByteOrder) ([]byte, bool) {
+	r := bytes.NewReader(data)
+	out := bytes.NewBuffer(nil)
+
+	for r.Len() > 0 {
+		if r.Len() < 4 {
+			return nil, false
+		}
+		var n uint32
+		if err := binary.Read(r, order, &n); err != nil {
+			return nil, false
+		}
+		if n == 0 || int(n) > r.Len() {
+			return nil, false
+		}
+		chunk := make([]byte, n)
+		if _, err := io.ReadFull(r, chunk); err != nil {
+			return nil, false
+		}
+		decoded := lzfse.DecodeBuffer(chunk)
+		if len(decoded) == 0 {
+			return nil, false
+		}
+		out.Write(decoded)
+	}
+
+	if out.Len() == 0 {
+		return nil, false
+	}
+	return out.Bytes(), true
+}
+
+func decodeCompressedChunk(t RenditionCompressionType, data []byte, expectedLen int) ([]byte, error) {
+	// lzfse payloads are decompressed into a fixed-size buffer first:
+	// lzfse-cgo's DecodeBuffer grows its output buffer up to ~50MB when a
+	// decode fails, so a single corrupt rendition would balloon memory.
+	// With the expected pixel size known, decoding never allocates more
+	// than expectedLen bytes.
+	if t == kRenditionCompressionType_lzfse || t == kRenditionCompressionType_blurred {
+		return decodeLZFSE(data, expectedLen)
+	}
+
+	r, err := umCompression(t, bytes.NewBuffer(data))
+	if err == nil {
+		defer r.Close()
+		decoded, readErr := ioutil.ReadAll(r)
+		if readErr != nil {
+			return nil, readErr
+		}
+		return decoded, nil
+	}
+
+	return nil, err
+}
+
+func imageBytesPerPixel(format string) int {
+	switch format {
+	case "ARGB", "BGRA":
+		return 4
+	case "GA8":
+		return 2
+	default:
+		return 0
+	}
+}
+
 func decodeImage(format string, width, height int, r io.Reader) (image.Image, error) {
 	offset := 0
 	rawData, err := ioutil.ReadAll(r)
@@ -172,7 +301,7 @@ func decodeImage(format string, width, height int, r io.Reader) (image.Image, er
 		return nil, err
 	}
 	switch format {
-	case "ARGB":
+	case "ARGB", "BGRA":
 		if v := len(rawData) - int(width*height*4); v != 0 {
 			offset = v / int(height*4)
 		}

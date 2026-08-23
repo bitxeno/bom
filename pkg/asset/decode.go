@@ -40,6 +40,16 @@ type AssetParser interface {
 
 type asset struct {
 	bom bom.BomParser
+	// renditionFilter, when set, is consulted before decoding each
+	// rendition in Renditions. Returning false skips the rendition
+	// entirely, which avoids decompressing image data that the caller
+	// does not need (e.g. looking for a single icon in a large
+	// Assets.car would otherwise decode every image in the catalog).
+	renditionFilter func(RenditionAttrs) bool
+}
+
+func (a *asset) SetRenditionFilter(f func(RenditionAttrs) bool) {
+	a.renditionFilter = f
 }
 
 func New(b bom.BomParser) *asset {
@@ -246,17 +256,25 @@ func (a *asset) Renditions(loop func(cb *RenditionCallback) (stop bool)) error {
 
 		// TODO: skip TLV for now
 		tmp := make([]byte, c.Csibitmaplist.TvlLength)
-		if _, err := d.Read(tmp); err != nil {
+		if _, err := io.ReadFull(d, tmp); err != nil {
 			return err
 		}
 
 		// log.Printf("%s: %s: %s attrs: %+v TVL: %+v %v", c.Tag.String(), c.PixelFormat.String(), c.Csimetadata.Name.String(), attrs, c, len(tmp))
+		// Skip renditions the caller does not want before decompressing
+		// them. Decoding every rendition of a large Assets.car can
+		// allocate hundreds of megabytes of pixel data for a single
+		// icon lookup.
+		if a.renditionFilter != nil && !a.renditionFilter(attrs) {
+			return nil
+		}
 		// string value reverse
 		format := strings.TrimSpace(string(helper.Reverse(c.PixelFormat[:])))
 		switch format {
 		case "DATA":
 			// TODO:
-			log.Print("TODO: handle DATA")
+			// log.Print("TODO: handle DATA")
+			return nil
 		case "JPEG", "HEIF":
 			cb := &RenditionCallback{
 				Attrs: attrs,
@@ -277,7 +295,7 @@ func (a *asset) Renditions(loop func(cb *RenditionCallback) (stop bool)) error {
 			if stop {
 				return nil
 			}
-		case "ARGB", "GA8", "RGB5", "RGBW", "GA16":
+		case "ARGB", "BGRA", "GA8", "RGB5", "RGBW", "GA16":
 			// TODO:
 			cb := &RenditionCallback{
 				Attrs: attrs,
@@ -499,6 +517,18 @@ func (a *asset) imageCandidates(name string) ([]imageCandidate, error) {
 	}
 
 	candidates := []imageCandidate{}
+	// Only decode renditions that belong to a matching facet. Renditions
+	// iterates every entry in the catalog and would otherwise decompress
+	// all images (a large Assets.car can hold hundreds of megabytes of
+	// pixel data) just to find one icon.
+	a.SetRenditionFilter(func(attrs RenditionAttrs) bool {
+		id, ok := attrs[kRenditionAttributeType_Identifier]
+		if !ok {
+			return false
+		}
+		_, ok = ids[id]
+		return ok
+	})
 	err = a.Renditions(func(cb *RenditionCallback) (stop bool) {
 		if cb.Err != nil || cb.Type != RenditionTypeImage || cb.Image == nil {
 			return false
@@ -545,17 +575,15 @@ func (a *asset) ImageWithOptions(name string, options ImageOptions) (image.Image
 	return best.image, nil
 }
 
-// LargestImage returns the largest decoded image that matches the lookup name.
-func (a *asset) LargestImage(name string) (image.Image, error) {
-	return a.ImageWithOptions(name, ImageOptions{})
-}
-
 func (a *asset) Image(name string) (image.Image, error) {
 	return a.ImageWithOptions(name, ImageOptions{})
 }
 
-// ImageCandidatesInfo returns a public, simplified list of matching image candidates
-// containing name, rendition name, image and its dimensions. It does not expose attrs.
+// ImageCandidates returns the decoded image renditions matching name,
+// with their dimensions. Only renditions whose facet matches name are
+// decoded; everything else in the catalog is skipped without
+// decompressing, so a large Assets.car costs a fraction of the memory it
+// would if every image were decoded.
 func (a *asset) ImageCandidates(name string) ([]ImageCandidateInfo, error) {
 	candidates, err := a.imageCandidates(name)
 	if err != nil {
