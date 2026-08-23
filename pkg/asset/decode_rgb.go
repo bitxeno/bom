@@ -174,12 +174,13 @@ func umCompression(t RenditionCompressionType, r io.Reader) (decoded io.ReadClos
 	switch t {
 	case kRenditionCompressionType_zip:
 		return gzip.NewReader(r)
-	case kRenditionCompressionType_lzfse, kRenditionCompressionType_blurred:
+	case kRenditionCompressionType_lzfse, kRenditionCompressionType_blurred,
+		kRenditionCompressionType_deepmap_lzfse, kRenditionCompressionType_deepmap_2:
 		d, err := ioutil.ReadAll(r)
 		if err != nil {
 			return nil, err
 		}
-		decodedBuf, err := decodeLZFSE(d, 0)
+		decodedBuf, err := decodeLZFSE(d, 0, false)
 		if err != nil {
 			return nil, err
 		}
@@ -195,7 +196,27 @@ func umCompression(t RenditionCompressionType, r io.Reader) (decoded io.ReadClos
 	return
 }
 
-func decodeLZFSE(data []byte, maxOutput int) ([]byte, error) {
+// The four-byte stream magics that begin a plain lzfse-family payload:
+// "bvx6" (lzfse), "bvx2" (older lzfse) and "bvxn" (lzvn). Chunked and
+// bitmap payloads do not carry them, and feeding those to lzfse-cgo's
+// DecodeBuffer makes it balloon its output buffer up to ~50MB per failed
+// attempt, so DecodeBuffer is only ever called on data that actually
+// starts with one of these magics.
+func looksLikePlainLZFSE(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	if data[0] != 0x62 || data[1] != 0x76 || data[2] != 0x78 {
+		return false
+	}
+	switch data[3] {
+	case 0x36, 0x32, 0x6e: // bvx6, bvx2, bvxn
+		return true
+	}
+	return false
+}
+
+func decodeLZFSE(data []byte, maxOutput int, allowPlain bool) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
@@ -214,6 +235,26 @@ func decodeLZFSE(data []byte, maxOutput int) ([]byte, error) {
 			dst := make([]byte, maxOutput)
 			if n := lzfse.LzBitMapDecompress(data[skip:], dst); n > 0 && n <= len(dst) {
 				return dst[:n], nil
+			}
+		}
+	}
+
+	// Plain lzfse streams (identified by their magic header) are decoded
+	// with DecodeBuffer. A valid stream succeeds on the first attempt
+	// without growing its buffer; the output-size bound additionally
+	// rejects any inflated result. Non-lzfse payloads (chunked, deepmap)
+	// never reach DecodeBuffer, so they cannot trigger the ~50MB growth.
+	if allowPlain {
+		for _, skip := range []int{0, 4, 8, 12, 16} {
+			if len(data) <= skip {
+				continue
+			}
+			chunk := data[skip:]
+			if !looksLikePlainLZFSE(chunk) {
+				continue
+			}
+			if out := lzfse.DecodeBuffer(chunk); len(out) > 0 && (maxOutput <= 0 || len(out) <= maxOutput*2) {
+				return out, nil
 			}
 		}
 	}
@@ -266,8 +307,14 @@ func decodeCompressedChunk(t RenditionCompressionType, data []byte, expectedLen 
 	// decode fails, so a single corrupt rendition would balloon memory.
 	// With the expected pixel size known, decoding never allocates more
 	// than expectedLen bytes.
-	if t == kRenditionCompressionType_lzfse || t == kRenditionCompressionType_blurred {
-		return decodeLZFSE(data, expectedLen)
+	switch t {
+	case kRenditionCompressionType_lzfse:
+		return decodeLZFSE(data, expectedLen, true)
+	case kRenditionCompressionType_blurred, kRenditionCompressionType_deepmap_lzfse,
+		kRenditionCompressionType_deepmap_2:
+		// Not plain lzfse streams: only try the bounded bitmap decoder,
+		// never DecodeBuffer (which would balloon on these formats).
+		return decodeLZFSE(data, expectedLen, false)
 	}
 
 	r, err := umCompression(t, bytes.NewBuffer(data))
