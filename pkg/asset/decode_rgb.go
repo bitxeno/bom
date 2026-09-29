@@ -110,7 +110,9 @@ func (a *asset) decodeImage(format string, d io.Reader, c *csiheader) (image.Ima
 			if err := binary.Read(d, binary.LittleEndian, v3); err != nil {
 				return nil, err
 			}
-			buf := make([]byte, v3.RowDataLen)
+			// v3.RowDataLen alone truncates bands larger than 64KB;
+			// use the full 32-bit band length (see BandDataLen).
+			buf := make([]byte, v3.BandDataLen())
 			_, err := io.ReadFull(d, buf)
 			if err != nil {
 				return nil, err

@@ -199,7 +199,11 @@ type CUIRawPixelRendition struct {
 	// RawData []byte
 }
 
-// TODO:
+// Each entry describes one band (a horizontal slice of rows) of a
+// version 1/3 pixel rendition. Bands produced by newer asset catalog
+// tools exceed 64KB, which does not fit in RowDataLen alone: the band
+// data length is a 32-bit value whose low word is RowDataLen and whose
+// high word is Arg6. Older archives have Arg6 == 0.
 type CUIThemePixelRenditionV3 struct {
 	Arg1       uint16
 	Arg2       uint16
@@ -208,6 +212,12 @@ type CUIThemePixelRenditionV3 struct {
 	Height     uint32
 	RowDataLen uint16
 	Arg6       uint16
+}
+
+// BandDataLen returns the full band data length in bytes: the 32-bit
+// value composed of RowDataLen (low word) and Arg6 (high word).
+func (v *CUIThemePixelRenditionV3) BandDataLen() uint32 {
+	return uint32(v.RowDataLen) | uint32(v.Arg6)<<16
 }
 
 // As seen in _CUIConvertCompressionTypeToString
